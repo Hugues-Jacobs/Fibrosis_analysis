@@ -4,6 +4,10 @@ Created on Tue Apr  2 10:44:35 2024
 
 @author: hugues Jacobs,
 Institut Clinique de la Souris (iCS), Illkirch - France
+
+purpose: the script is intended to produce extended fibrosis analysis on Sirius Red stained histological sections.
+the images expected are Czi format images obtained from Axiocan7 device using circular polarized light. 
+
 """
 
 import slideio
