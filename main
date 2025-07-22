@@ -1,0 +1,310 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  2 10:44:35 2024
+
+@author: hugues Jacobs,
+Institut Clinique de la Souris (iCS), Illkirch - France
+"""
+
+import slideio
+import pandas as pd
+import numpy as np
+from skimage.measure import label, regionprops
+from scipy import ndimage
+import glob
+
+def medfilter(im, medkernel):
+    """
+    Apply a median filter to reduce noise in an image.
+    
+    Parameters:
+        im (ndarray): Input image array.
+        medkernel (int): Kernel size for the median filter.
+    
+    Returns:
+        ndarray: Filtered image.
+    """
+    return ndimage.median_filter(im, size=medkernel)
+
+def threshold(im, quantile):
+    """
+    Threshold an image based on intensity quantile and binarize it.
+    
+    Parameters:
+        im (ndarray): Input image array.
+        quantile (float): Quantile value (between 0 and 1) for thresholding.
+    
+    Returns:
+        ndarray: Binarized image.
+    """
+    im[im > np.quantile(im, quantile)] = 0  # Remove high-intensity pixels
+    im[im != 0] = 1  # Set remaining non-zero pixels to 1
+    return im
+
+def imfilter(im, medkernel, quantile):
+    """
+    Apply a median filter followed by thresholding.
+    
+    Parameters:
+        im (ndarray): Input image array.
+        medkernel (int): Median filter kernel size.
+        quantile (float): Quantile value for thresholding.
+    
+    Returns:
+        ndarray: Filtered and binarized image.
+    """
+    im = medfilter(im, medkernel)
+    im = threshold(im, quantile)
+    return im
+
+def get_tissue(scene, w):
+    """
+    Extract the main tissue region from channel 0 and calculate its surface area.
+    
+    Parameters:
+        scene (slideio.Scene): Scene object from the CZI file.
+        w (int): Scene width.
+    
+    Returns:
+        tuple: (labeled tissue mask as ndarray, surface area in pixels)
+    """
+    reshape_factor = 2
+    tissue = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[0])
+    thresh = threshold(tissue.copy(), 0.2)
+    labeled = label(thresh)
+    arg = np.array([i.area for i in regionprops(labeled)]).argmax() + 1
+    labeled[labeled != arg] = 0  # Keep only the largest connected region
+    labeled[labeled != 0] = 1  # Binarize the mask
+    tissue_surface = np.sum(labeled) * reshape_factor**2
+    return labeled, tissue_surface
+
+def get_fibrosis(scene, w, labeled):
+    """
+    Extract fibrosis region from channel 1, remove noise, and calculate surface area.
+    
+    Parameters:
+        scene (slideio.Scene): Scene object.
+        w (int): Scene width.
+        labeled (ndarray): Tissue mask.
+    
+    Returns:
+        tuple: (filtered fibrosis mask, fibrosis surface area)
+    """
+    reshape_factor = 2
+    fibrosis = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[1])
+    fibrosis = imfilter(fibrosis, 5, 0.03) * labeled
+    noise = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[2])
+    noise = threshold(noise, 0.05)
+    mask = fibrosis * noise  # Detect overlapping noise
+    fibrosis = fibrosis * (1 - mask)  # Remove noise regions
+    return fibrosis, np.sum(fibrosis) * reshape_factor**2
+
+def get_green(scene, w, labeled, bkg):
+    """
+    Extract collagen III (green signal) from channel 4 and calculate surface area.
+    
+    Parameters:
+        scene (slideio.Scene): Scene object.
+        w (int): Scene width.
+        labeled (ndarray): Tissue mask.
+        bkg (ndarray): Background mask.
+    
+    Returns:
+        tuple: (green mask, surface area of collagen III)
+    """
+    reshape_factor = 2
+    green = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[4]) * labeled
+    green = green * (1 - bkg)  # Remove background
+    green[green < 28] = 0
+    green[green != 0] = 1
+    return green, np.sum(green) * reshape_factor**2
+
+def get_red(scene, w, labeled, bkg):
+    """
+    Extract collagen I (red signal) from channel 5 and calculate surface area.
+    
+    Parameters:
+        scene (slideio.Scene): Scene object.
+        w (int): Scene width.
+        labeled (ndarray): Tissue mask.
+        bkg (ndarray): Background mask.
+    
+    Returns:
+        tuple: (red mask, surface area of collagen I)
+    """
+    reshape_factor = 2
+    red = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[5]) * labeled
+    red = red * (1 - bkg)  # Remove background
+    red[red < 28] = 0
+    red[red != 0] = 1
+    return red, np.sum(red) * reshape_factor**2
+
+def get_bkg(scene, w, labeled):
+    """
+    Generate background mask from channel 3.
+    
+    Parameters:
+        scene (slideio.Scene): Scene object.
+        w (int): Scene width.
+        labeled (ndarray): Tissue mask.
+    
+    Returns:
+        ndarray: Background mask.
+    """
+    reshape_factor = 2
+    bkg = scene.read_block(size=(int(w / reshape_factor), 0), channel_indices=[3]) * labeled
+    bkg[bkg < 20] = 0
+    bkg[bkg != 0] = 1
+    return bkg
+class main(QWidget):
+    """
+    Main application window for analyzing fibrosis in CZI files.
+    Provides GUI interface to select input/output directories and launch the analysis.
+    """
+    def __init__(self):
+        """
+        Initializes the GUI window and its layout.
+        """
+        super().__init__()
+        self.setWindowTitle('fibrosis CZI files analyzer')
+        self.setFixedSize(800, 350)
+        self.setUI()
+
+    def setUI(self):
+        """
+        Sets up the user interface layout including labels, input fields, and buttons.
+        """
+        # Input/output labels
+        in_label = QLabel('files directory')
+        out_label = QLabel('output folder name')
+
+        # Layouts for labels, lines, and buttons
+        vbox_label = QVBoxLayout()
+        vbox_label.addWidget(in_label)
+        vbox_label.addWidget(out_label)
+
+        self.in_line = QLineEdit()
+        self.out_line = QLineEdit()
+        vbox_line = QVBoxLayout()
+        vbox_line.addWidget(self.in_line)
+        vbox_line.addWidget(self.out_line)
+
+        self.in_btn = QPushButton('in')
+        self.out_btn = QPushButton('out')
+        self.out_btn.setEnabled(True)
+        vbox_btn = QVBoxLayout()
+        vbox_btn.addWidget(self.in_btn)
+        vbox_btn.addWidget(self.out_btn)
+
+        # Combine into a horizontal layout
+        hbox = QHBoxLayout()
+        hbox.addLayout(vbox_label)
+        hbox.addLayout(vbox_line)
+        hbox.addLayout(vbox_btn)
+
+        # Final button and label to trigger analysis
+        self.proceed_btn = QPushButton('proceed')
+        self.proceed_label = QLabel('')
+        self.label = QLabel('')
+
+        vbox_final = QVBoxLayout()
+        vbox_final.addLayout(hbox)
+        vbox_final.addWidget(self.proceed_label)
+        vbox_final.addWidget(self.label)
+        vbox_final.addWidget(self.proceed_btn)
+
+        self.connexions()
+        self.setLayout(vbox_final)
+        self.show()
+
+    def connexions(self):
+        """
+        Connects the button signals to their respective actions.
+        """
+        self.in_btn.clicked.connect(self.in_folder)
+        self.out_btn.clicked.connect(self.out_folder)
+        self.proceed_btn.clicked.connect(self.analyze)
+
+    def in_folder(self):
+        """
+        Opens a directory dialog for selecting the input folder.
+        """
+        file = str(QFileDialog.getExistingDirectory(self, "Select Directory"))
+        self.in_line.setText(file)
+
+    def out_folder(self):
+        """
+        Opens a directory dialog for selecting the output folder.
+        """
+        file = str(QFileDialog.getExistingDirectory(self, "Select Directory"))
+        self.out_line.setText(file)
+
+    def get_data(self, PATH):
+        """
+        Processes all CZI image files in the input folder and extracts metrics.
+        
+        Parameters:
+            PATH (str): Path to the directory containing CZI files.
+
+        Returns:
+            DataFrame: A pandas DataFrame containing quantified metrics for each file.
+        """
+        files = glob.glob(PATH + '*.czi')
+        DF = pd.DataFrame()
+
+        for n, i in enumerate(files):
+            app.processEvents()  # Refresh GUI during processing
+            print(n, i.split('\\')[-1][:-4])
+
+            slide = slideio.open_slide(i, "CZI")
+            scene = slide.get_scene(0)
+            _, _, w, h = scene.rect
+
+            # Image processing pipeline
+            labeled, tissue_surface = get_tissue(scene, w)
+            fibrosis, fibrosis_surface = get_fibrosis(scene, w, labeled)
+            bkg = get_bkg(scene, w, labeled)
+            red, colI_surface = get_red(scene, w, labeled, bkg)
+            green, colIII_surface = get_green(scene, w, labeled, bkg)
+            union = np.sum(red * green)
+            surface_col = colI_surface + colIII_surface - union
+
+            # Store extracted metrics in a DataFrame
+            df = pd.DataFrame({
+                'name': i.split('\\')[-1][:-7],
+                'Tissue surface': tissue_surface,
+                'Fibrosis surface': fibrosis_surface,
+                'Collagen surface': surface_col,
+                'ColI surface': colI_surface,
+                'ColIII surface': colIII_surface,
+                '% fibrosis': fibrosis_surface / tissue_surface * 100,
+                '% Collagen': surface_col / tissue_surface * 100,
+                '% ColI': colI_surface / tissue_surface * 100,
+                '% ColIII': colIII_surface / tissue_surface * 100,
+                '%Col/Fibrosis': surface_col / fibrosis_surface * 100,
+                '%ColI/Fibrosis': colI_surface / fibrosis_surface * 100,
+                '%ColIII/Fibrosis': colIII_surface / fibrosis_surface * 100,
+                '%ColI/Col': colI_surface / surface_col * 100,
+                '%ColIII/Col': colIII_surface / surface_col * 100,
+                '%ColI/ColIII': colIII_surface / colI_surface * 100},
+                index=[0]
+            )
+
+            DF = df.copy() if n == 0 else pd.concat([DF, df])
+        return DF
+
+    def analyze(self):
+        """
+        Runs the analysis workflow and exports the result to Excel.
+        
+        Returns:
+            int: Always returns 0 after completing the process.
+        """
+        start = time.time()
+        self.proceed_label.setText('Job is ongoing')
+        app.processEvents()
+        data_table = self.get_data(self.in_line.text())
+        data_table.to_excel(self.out_line.text() + '/' + 'SR_results.xlsx', index=False)
+        end = time.time()
+        self.proceed_label.setText('Job completed in: ' + str(end - start) + ' seconds')
+        return 0
