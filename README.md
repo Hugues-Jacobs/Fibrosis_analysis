@@ -7,3 +7,7 @@ The present script is using slideio, numpy, pandas, scipy, and skimage libraries
 -----
 usage
 user is invited to provide images directory (all images must be in the same folder with no other files), and an output directory. By pushing proceed, the script compute the xlsx file from data obtained from images in input directory. 
+
+-----
+citation
+If you find this script of any utility and use it in your work, please aknowledge our work. 
