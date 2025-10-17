@@ -9,13 +9,22 @@ purpose: the script is intended to produce extended fibrosis analysis on Sirius 
 the images expected are Czi format images obtained from Axiocan7 device using circular polarized light. 
 
 """
-
+import sys
 import slideio
 import pandas as pd
 import numpy as np
 from skimage.measure import label, regionprops
 from scipy import ndimage
 import glob
+
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QFileDialog
+    )
+from PyQt5.QtWidgets import (
+    QLabel, QLineEdit,
+    QVBoxLayout, QHBoxLayout, QPushButton, 
+    )
+
 
 def medfilter(im, medkernel):
     """
